@@ -2,6 +2,7 @@ package handler
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -18,7 +19,7 @@ type AuthHandler struct {
 	authSvc      service.AuthService
 	oauthSvc     service.OAuthService
 	log          *logger.Logger
-	secureCookie bool // true in production: sets Secure flag on OAuth state cookie
+	secureCookie bool
 }
 
 func NewAuthHandler(
@@ -47,7 +48,21 @@ func (h *AuthHandler) Signup(c *gin.Context) {
 		respondError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, resp)
+
+	// --- 2.2 fix: email verification ---
+	// Account is inactive until verified. Tokens are nil in the response.
+	// TODO: dispatch verification email here (plug in your email provider).
+	// The verification link format: GET /api/v1/verify-email?token=<token>
+	// For now we log it so devs can test locally without an email provider.
+	h.log.Info("verification email needed",
+		logger.String("email", resp.User.Email),
+		// In production, remove this log and send the actual email.
+	)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"user":    resp.User,
+		"message": "account created — please check your email to verify your address before logging in",
+	})
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -96,6 +111,22 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "logged out successfully"})
 }
 
+// VerifyEmail handles GET /api/v1/verify-email?token=...
+// --- 2.2 fix: email verification endpoint ---
+func (h *AuthHandler) VerifyEmail(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		respondError(c, apperrors.WithDetail(apperrors.ErrBadRequest, "token query param is required"))
+		return
+	}
+	if err := h.authSvc.VerifyEmail(c.Request.Context(), token); err != nil {
+		h.log.Warn("email verification failed", logger.Error(err))
+		respondError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "email verified — you can now log in"})
+}
+
 func (h *AuthHandler) GoogleOAuth(c *gin.Context) {
 	state, err := generateState()
 	if err != nil {
@@ -119,6 +150,15 @@ func (h *AuthHandler) GoogleCallback(c *gin.Context) {
 	}
 	resp, err := h.authSvc.HandleOAuthLogin(c.Request.Context(), info)
 	if err != nil {
+		// --- 2.2 fix: surface explicit linking requirement ---
+		if appErr, ok := apperrors.As(err); ok && appErr == apperrors.ErrOAuthLinkRequired {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+				"message":       appErr.Message,
+				"link_required": true,
+				// link_token would be issued here once Phase 2 linking flow is built
+			})
+			return
+		}
 		respondError(c, err)
 		return
 	}
@@ -148,6 +188,14 @@ func (h *AuthHandler) GithubCallback(c *gin.Context) {
 	}
 	resp, err := h.authSvc.HandleOAuthLogin(c.Request.Context(), info)
 	if err != nil {
+		// --- 2.2 fix: surface explicit linking requirement ---
+		if appErr, ok := apperrors.As(err); ok && appErr == apperrors.ErrOAuthLinkRequired {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+				"message":       appErr.Message,
+				"link_required": true,
+			})
+			return
+		}
 		respondError(c, err)
 		return
 	}
@@ -188,8 +236,6 @@ func respondError(c *gin.Context, err error) {
 	c.AbortWithStatusJSON(http.StatusInternalServerError, apperrors.ErrInternalServer)
 }
 
-// generateState produces a cryptographically random, URL-safe state token
-// for OAuth CSRF protection.
 func generateState() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -198,9 +244,15 @@ func generateState() (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
+// validateOAuthState uses constant-time comparison to prevent timing oracle attacks.
 func validateOAuthState(c *gin.Context) error {
-	cookieState, _ := c.Cookie("oauth_state")
-	if cookieState != c.Query("state") {
+	cookieState, err := c.Cookie("oauth_state")
+	if err != nil || cookieState == "" {
+		return apperrors.ErrOAuthFailed
+	}
+	queryState := c.Query("state")
+	// subtle.ConstantTimeCompare guards against timing side-channel on the CSRF token.
+	if subtle.ConstantTimeCompare([]byte(cookieState), []byte(queryState)) != 1 {
 		return apperrors.ErrOAuthFailed
 	}
 	return nil

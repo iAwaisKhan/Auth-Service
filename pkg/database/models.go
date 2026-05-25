@@ -30,9 +30,24 @@ type User struct {
 	Name      string         `gorm:"type:varchar(255)"                       json:"name"`
 	AvatarURL string         `gorm:"type:varchar(512)"                       json:"avatar_url,omitempty"`
 	IsActive  bool           `gorm:"not null;default:true"                   json:"is_active"`
+
+	// --- 2.2 fix: email verification ---
+	EmailVerified     bool      `gorm:"not null;default:false"           json:"email_verified"`
+	VerificationToken string    `gorm:"type:varchar(64)"                 json:"-"`
+	VerifiedAt        *time.Time `                                       json:"verified_at,omitempty"`
+
+	// --- 2.2 fix: account lock-out ---
+	FailedLoginAttempts int        `gorm:"not null;default:0"             json:"-"`
+	LockedUntil         *time.Time `                                      json:"-"`
+
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index"                                   json:"-"`
+}
+
+// IsLocked reports whether the account is currently locked.
+func (u *User) IsLocked() bool {
+	return u.LockedUntil != nil && u.LockedUntil.After(time.Now())
 }
 
 // BeforeCreate sets UUID before inserting a new User record
@@ -51,15 +66,15 @@ func (u *User) BeforeCreate(tx *gorm.DB) error {
 
 // OAuthAccount stores OAuth provider tokens linked to a User
 type OAuthAccount struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey"                          json:"id"`
-	UserID         uuid.UUID `gorm:"type:uuid;not null;index"                      json:"user_id"`
-	Provider       string    `gorm:"type:varchar(50);not null"                     json:"provider"`
-	ProviderUserID string    `gorm:"type:varchar(255);not null"                    json:"provider_user_id"`
-	AccessToken    string    `gorm:"type:text"                                     json:"-"`
-	RefreshToken   string    `gorm:"type:text"                                     json:"-"`
-	ExpiresAt      *time.Time `                                                    json:"expires_at,omitempty"`
-	CreatedAt      time.Time `                                                    json:"created_at"`
-	UpdatedAt      time.Time `                                                    json:"updated_at"`
+	ID             uuid.UUID  `gorm:"type:uuid;primaryKey"                          json:"id"`
+	UserID         uuid.UUID  `gorm:"type:uuid;not null;index"                      json:"user_id"`
+	Provider       string     `gorm:"type:varchar(50);not null"                     json:"provider"`
+	ProviderUserID string     `gorm:"type:varchar(255);not null"                    json:"provider_user_id"`
+	AccessToken    string     `gorm:"type:text"                                     json:"-"`
+	RefreshToken   string     `gorm:"type:text"                                     json:"-"`
+	ExpiresAt      *time.Time `                                                     json:"expires_at,omitempty"`
+	CreatedAt      time.Time  `                                                     json:"created_at"`
+	UpdatedAt      time.Time  `                                                     json:"updated_at"`
 
 	User User `gorm:"foreignKey:UserID" json:"-"`
 }

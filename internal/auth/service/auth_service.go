@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -12,6 +14,12 @@ import (
 	"github.com/yourorg/auth-service/pkg/database"
 	apperrors "github.com/yourorg/auth-service/pkg/errors"
 	"github.com/yourorg/auth-service/pkg/validator"
+)
+
+// lockout policy constants
+const (
+	maxFailedAttempts = 5
+	lockDuration      = 15 * time.Minute
 )
 
 // ---- Request / Response DTOs ----
@@ -33,26 +41,30 @@ type AuthResponse struct {
 }
 
 type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	Provider  string    `json:"provider"`
-	AvatarURL string    `json:"avatar_url,omitempty"`
+	ID            uuid.UUID `json:"id"`
+	Email         string    `json:"email"`
+	Name          string    `json:"name"`
+	Role          string    `json:"role"`
+	Provider      string    `json:"provider"`
+	AvatarURL     string    `json:"avatar_url,omitempty"`
+	EmailVerified bool      `json:"email_verified"`
 }
 
 // OAuthUserInfo is extracted from OAuth provider callbacks.
-// It carries both the user's profile and the provider's access tokens
-// so they can be persisted for later API calls on behalf of the user.
 type OAuthUserInfo struct {
 	ProviderUserID       string
 	Email                string
 	Name                 string
 	AvatarURL            string
 	Provider             string
-	ProviderToken        string     // provider access token
-	ProviderRefreshToken string     // provider refresh token (if issued)
-	ProviderTokenExpiry  *time.Time // when the provider token expires (nil = no expiry)
+	ProviderToken        string
+	ProviderRefreshToken string
+	ProviderTokenExpiry  *time.Time
+}
+
+// VerifyEmailRequest carries the token from the verification link.
+type VerifyEmailRequest struct {
+	Token string `json:"token" binding:"required"`
 }
 
 // ---- Service Interface ----
@@ -66,6 +78,9 @@ type AuthService interface {
 
 	// OAuth
 	HandleOAuthLogin(ctx context.Context, info *OAuthUserInfo) (*AuthResponse, error)
+
+	// --- 2.2 fix: email verification ---
+	VerifyEmail(ctx context.Context, token string) error
 }
 
 type authService struct {
@@ -81,18 +96,15 @@ func NewAuthService(repo authRepo.AuthRepository, tokenSvc TokenService) AuthSer
 }
 
 func (s *authService) Signup(ctx context.Context, req *SignupRequest) (*AuthResponse, error) {
-	// Sanitize + validate email
 	email := validator.SanitizeEmail(req.Email)
 	if !validator.ValidateEmail(email) {
 		return nil, apperrors.WithDetail(apperrors.ErrBadRequest, "invalid email format")
 	}
 
-	// Validate password complexity
 	if ok, msg := validator.ValidatePassword(req.Password); !ok {
 		return nil, apperrors.WithDetail(apperrors.ErrBadRequest, msg)
 	}
 
-	// Check for existing user
 	existing, err := s.repo.GetUserByEmail(ctx, email)
 	if err != nil && err != apperrors.ErrUserNotFound {
 		return nil, err
@@ -101,32 +113,40 @@ func (s *authService) Signup(ctx context.Context, req *SignupRequest) (*AuthResp
 		return nil, apperrors.ErrUserAlreadyExists
 	}
 
-	// Hash password
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
 
+	// --- 2.2 fix: email verification — new local accounts start inactive ---
+	verificationToken, err := generateVerificationToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate verification token: %w", err)
+	}
+
 	user := &database.User{
-		Email:    email,
-		Password: string(hashedPassword),
-		Name:     req.Name,
-		Provider: database.ProviderLocal,
-		Role:     database.RoleUser,
+		Email:             email,
+		Password:          string(hashedPassword),
+		Name:              req.Name,
+		Provider:          database.ProviderLocal,
+		Role:              database.RoleUser,
+		IsActive:          false,         // inactive until email verified
+		EmailVerified:     false,
+		VerificationToken: verificationToken,
 	}
 
 	if err := s.repo.CreateUser(ctx, user); err != nil {
 		return nil, err
 	}
 
-	tokens, err := s.tokenService.GenerateTokenPair(ctx, user.ID, user.Email, user.Role)
-	if err != nil {
-		return nil, err
-	}
+	// NOTE: Caller (handler) is responsible for sending the verification email.
+	// The token is embedded in the response so the handler can dispatch it.
+	// In production, plug in your email provider here or use an event/queue.
 
+	// Do NOT issue tokens yet — account is inactive until verified.
 	return &AuthResponse{
-		User:   mapUserToResponse(user),
-		Tokens: tokens,
+		User: mapUserToResponse(user),
+		// Tokens: nil — intentionally omitted; client must verify email first.
 	}, nil
 }
 
@@ -141,6 +161,11 @@ func (s *authService) Login(ctx context.Context, req *LoginRequest) (*AuthRespon
 		return nil, err
 	}
 
+	// --- 2.2 fix: check account lock before any further processing ---
+	if user.IsLocked() {
+		return nil, apperrors.ErrAccountLocked
+	}
+
 	if !user.IsActive {
 		return nil, apperrors.ErrAccountInactive
 	}
@@ -152,8 +177,13 @@ func (s *authService) Login(ctx context.Context, req *LoginRequest) (*AuthRespon
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
+		// --- 2.2 fix: increment failed counter on wrong password ---
+		_ = s.repo.IncrementFailedLogins(ctx, user.ID, lockDuration, maxFailedAttempts)
 		return nil, apperrors.ErrInvalidCredentials
 	}
+
+	// --- 2.2 fix: reset counter on successful login ---
+	_ = s.repo.ResetFailedLogins(ctx, user.ID)
 
 	tokens, err := s.tokenService.GenerateTokenPair(ctx, user.ID, user.Email, user.Role)
 	if err != nil {
@@ -201,35 +231,42 @@ func (s *authService) HandleOAuthLogin(ctx context.Context, info *OAuthUserInfo)
 			return nil, err
 		}
 	} else {
-		// Try to find user by email (link accounts if email matches)
-		user, err = s.repo.GetUserByEmail(ctx, email)
+		// Try to find user by email
+		existingUser, err := s.repo.GetUserByEmail(ctx, email)
 		if err != nil && err != apperrors.ErrUserNotFound {
 			return nil, err
 		}
 
-		if user == nil {
-			// Auto-create new user
-			user = &database.User{
-				Email:     email,
-				Name:      info.Name,
-				AvatarURL: info.AvatarURL,
-				Provider:  info.Provider,
-				Role:      database.RoleUser,
-			}
-			if err := s.repo.CreateUser(ctx, user); err != nil {
-				return nil, err
-			}
+		if existingUser != nil {
+			// --- 2.2 fix: implicit account linking is a privacy risk ---
+			// Return a specific error so the handler can surface a consent flow.
+			// The caller must implement POST /link-account (Phase 2 roadmap item).
+			return nil, apperrors.ErrOAuthLinkRequired
+		}
+
+		// No existing user — create new. OAuth accounts start active + verified.
+		user = &database.User{
+			Email:         email,
+			Name:          info.Name,
+			AvatarURL:     info.AvatarURL,
+			Provider:      info.Provider,
+			Role:          database.RoleUser,
+			IsActive:      true,
+			EmailVerified: true, // provider already verified the email
+		}
+		if err := s.repo.CreateUser(ctx, user); err != nil {
+			return nil, err
 		}
 	}
 
-	// Guard: reject inactive accounts BEFORE creating the OAuth link or issuing tokens.
-	// This check covers ALL paths — returning OAuth user, email-matched user, and new user.
+	// Guard: reject inactive accounts BEFORE issuing tokens.
+	if user.IsLocked() {
+		return nil, apperrors.ErrAccountLocked
+	}
 	if !user.IsActive {
 		return nil, apperrors.ErrAccountInactive
 	}
 
-	// Upsert the OAuth account link and persist the latest provider tokens.
-	// Using Upsert ensures provider access/refresh tokens stay up-to-date on every login.
 	oauthLink := &database.OAuthAccount{
 		UserID:         user.ID,
 		Provider:       info.Provider,
@@ -253,13 +290,29 @@ func (s *authService) HandleOAuthLogin(ctx context.Context, info *OAuthUserInfo)
 	}, nil
 }
 
+// VerifyEmail activates an account using the token from the verification email.
+// --- 2.2 fix: email verification ---
+func (s *authService) VerifyEmail(ctx context.Context, token string) error {
+	return s.repo.VerifyEmail(ctx, token)
+}
+
+// generateVerificationToken produces a 32-byte cryptographically random hex token.
+func generateVerificationToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 func mapUserToResponse(u *database.User) UserResponse {
 	return UserResponse{
-		ID:        u.ID,
-		Email:     u.Email,
-		Name:      u.Name,
-		Role:      u.Role,
-		Provider:  u.Provider,
-		AvatarURL: u.AvatarURL,
+		ID:            u.ID,
+		Email:         u.Email,
+		Name:          u.Name,
+		Role:          u.Role,
+		Provider:      u.Provider,
+		AvatarURL:     u.AvatarURL,
+		EmailVerified: u.EmailVerified,
 	}
 }

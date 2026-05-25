@@ -13,6 +13,7 @@ import (
 	"github.com/yourorg/auth-service/internal/middleware"
 	"github.com/yourorg/auth-service/pkg/cache"
 	"github.com/yourorg/auth-service/pkg/config"
+	"github.com/yourorg/auth-service/pkg/crypto"
 	"github.com/yourorg/auth-service/pkg/logger"
 )
 
@@ -32,21 +33,32 @@ func Setup(
 	// ── Global middleware ──────────────────────────────────────────────────────
 	router.Use(middleware.Recovery(log))
 	router.Use(middleware.RequestLogger(log))
-	router.Use(middleware.CORS(cfg.App)) // pass AppConfig so CORS is env-aware
+	router.Use(middleware.CORS(cfg.App))
+
+	// ── Build optional token cipher (nil = dev mode, no encryption) ───────────
+	var tokenCipher *crypto.TokenCipher
+	if len(cfg.OAuth.TokenEncryptionKey) == 32 {
+		var err error
+		tokenCipher, err = crypto.NewTokenCipher(cfg.OAuth.TokenEncryptionKey)
+		if err != nil {
+			// Config validation already ensures the key is valid; this is a safeguard.
+			panic("failed to init token cipher: " + err.Error())
+		}
+	}
 
 	// ── Dependency wiring ──────────────────────────────────────────────────────
-	repo := authRepo.NewAuthRepository(db)
+	repo := authRepo.NewAuthRepository(db, tokenCipher)
 	tokenSvc := authService.NewTokenService(cfg.JWT, redisClient)
 	oauthSvc := authService.NewOAuthService(cfg.OAuth)
 	authSvc := authService.NewAuthService(repo, tokenSvc)
-	// secureCookie=true in production so oauth_state cookie is sent only over HTTPS
 	handler := authHandler.NewAuthHandler(authSvc, oauthSvc, log, cfg.App.Env == "production")
 
 	// ── Rate limiters ──────────────────────────────────────────────────────────
-	// Strict limiter for auth endpoints: 10 req/min per IP
+	// NOTE: invalid format strings now panic at startup (fail-closed, 2.2 fix)
 	authLimiter := middleware.RateLimit(rateLimitStore, "10-M")
-	// Relaxed limiter for general API: 100 req/min per IP
 	apiLimiter := middleware.RateLimit(rateLimitStore, "100-M")
+	// --- 2.2 fix: stricter limiter for verification endpoints ---
+	verifyLimiter := middleware.RateLimit(rateLimitStore, "5-M")
 
 	// ── Health check ──────────────────────────────────────────────────────────
 	router.GET("/health", func(c *gin.Context) {
@@ -66,6 +78,9 @@ func Setup(
 			auth.POST("/logout", handler.Logout)
 		}
 
+		// --- 2.2 fix: email verification route (stricter limiter) ---
+		v1.GET("/verify-email", verifyLimiter, handler.VerifyEmail)
+
 		// OAuth routes
 		oauth := v1.Group("/oauth")
 		oauth.Use(authLimiter)
@@ -84,7 +99,7 @@ func Setup(
 			protected.GET("/profile", handler.GetProfile)
 		}
 
-		// Admin-only routes — requires JWT + admin role
+		// Admin-only routes
 		admin := v1.Group("/admin")
 		admin.Use(apiLimiter)
 		admin.Use(middleware.JWTAuth(tokenSvc))
@@ -94,7 +109,6 @@ func Setup(
 		}
 	}
 
-	// 404 handler
 	router.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "route not found"})
 	})
