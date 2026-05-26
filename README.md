@@ -1,6 +1,19 @@
 # 🔐 Auth Microservice
 
-A production-ready Authentication Microservice built in Go with clean architecture, JWT authentication, OAuth 2.0 integration (Google & GitHub), RBAC, and Redis-backed refresh token rotation.
+A production-ready Authentication Microservice built in Go with clean architecture, providing robust security and identity management for modern applications.
+
+## ✨ Features
+
+- **JWT Authentication**: Secure access and refresh tokens.
+- **Refresh Tokens**: Redis-backed refresh token rotation.
+- **OAuth2**: Native integration with Google and GitHub.
+- **Role-Based Access Control**: Built-in support for user and admin roles.
+- **Email Verification**: Infrastructure ready for verifying emails.
+- **Redis Session Management**: High performance session storage and rate limiting.
+- **PostgreSQL Persistence**: Reliable relational data storage.
+- **Rate Limiting**: IP-based rate limiting to prevent brute force attacks.
+- **Docker Support**: Containerized for easy deployment and local testing.
+- **Swagger/OpenAPI Documentation**: Auto-generated API documentation.
 
 ---
 
@@ -360,6 +373,16 @@ make setup         First-time project setup
 
 ---
 
+## 🔮 Future Improvements
+
+- Fully implement the email verification flow with a real provider (e.g., SendGrid, AWS SES).
+- Add support for additional OAuth providers (e.g., Apple, Microsoft).
+- Implement 2FA/MFA (Time-based One-Time Passwords).
+- Expand test coverage and add end-to-end (E2E) integration tests.
+
+---
+
 ## 📄 License
 
 MIT
+

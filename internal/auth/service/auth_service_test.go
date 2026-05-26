@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -83,6 +84,22 @@ func (f *fakeAuthRepo) UpsertOAuthAccount(_ context.Context, account *database.O
 	return nil
 }
 
+func (f *fakeAuthRepo) IncrementFailedLogins(ctx context.Context, userID uuid.UUID, lockDuration time.Duration, maxAttempts int) error {
+	return nil // fake implementation
+}
+
+func (f *fakeAuthRepo) ResetFailedLogins(ctx context.Context, userID uuid.UUID) error {
+	return nil // fake implementation
+}
+
+func (f *fakeAuthRepo) SetVerificationToken(ctx context.Context, userID uuid.UUID, token string) error {
+	return nil // fake implementation
+}
+
+func (f *fakeAuthRepo) VerifyEmail(ctx context.Context, token string) error {
+	return nil // fake implementation
+}
+
 // ── Fake token service ─────────────────────────────────────────────────────────
 
 type fakeTokenService struct{}
@@ -134,8 +151,8 @@ func TestSignup_Success(t *testing.T) {
 	if resp.User.Email != "alice@example.com" {
 		t.Errorf("expected email alice@example.com, got %s", resp.User.Email)
 	}
-	if resp.Tokens == nil {
-		t.Error("expected tokens, got nil")
+	if resp.Tokens != nil {
+		t.Error("expected tokens to be nil due to email verification, got tokens")
 	}
 }
 
@@ -248,16 +265,16 @@ func TestOAuthLogin_ExistingEmailLink(t *testing.T) {
 	})
 
 	// OAuth login should link to existing account
-	resp, err := svc.HandleOAuthLogin(context.Background(), &service.OAuthUserInfo{
+	_, err := svc.HandleOAuthLogin(context.Background(), &service.OAuthUserInfo{
 		ProviderUserID: "github-456",
 		Email:          "grace@gmail.com",
 		Name:           "Grace",
 		Provider:       "github",
 	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	if err == nil {
+		t.Fatalf("expected explicit linking error, got nil")
 	}
-	if resp.User.Email != "grace@gmail.com" {
-		t.Errorf("expected grace@gmail.com, got %s", resp.User.Email)
+	if err.Error() != "an account with this email already exists — explicit linking required" {
+		t.Errorf("expected explicit linking error, got %v", err)
 	}
 }
