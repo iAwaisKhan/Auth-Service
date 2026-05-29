@@ -1,388 +1,373 @@
-# 🔐 Auth Microservice
+# Auth Service
 
-A production-ready Authentication Microservice built in Go with clean architecture, providing robust security and identity management for modern applications.
-
-## ✨ Features
-
-- **JWT Authentication**: Secure access and refresh tokens.
-- **Refresh Tokens**: Redis-backed refresh token rotation.
-- **OAuth2**: Native integration with Google and GitHub.
-- **Role-Based Access Control**: Built-in support for user and admin roles.
-- **Email Verification**: Infrastructure ready for verifying emails.
-- **Redis Session Management**: High performance session storage and rate limiting.
-- **PostgreSQL Persistence**: Reliable relational data storage.
-- **Rate Limiting**: IP-based rate limiting to prevent brute force attacks.
-- **Docker Support**: Containerized for easy deployment and local testing.
-- **Swagger/OpenAPI Documentation**: Auto-generated API documentation.
+> Production-ready authentication microservice in Go — JWT, OAuth2, RBAC, Redis-backed token rotation, rate limiting.
 
 ---
 
-## 📁 Project Structure
+### What is this?
+
+A backend authentication service built from scratch using Go, PostgreSQL, and Redis.
+
+The service supports local authentication, Google and GitHub OAuth login, JWT-based authorization, session management, and role-based access control. It was built to explore how modern authentication systems work internally and to implement the core building blocks commonly used in production backend applications.
+
+The project focuses on clean architecture, security, scalability, and maintainability while keeping full control over the authentication and authorization workflow.
+
+
+---
+
+## High Level Architecture
+
+<img width="1536" height="1024" alt="Architecture auth" src="https://github.com/user-attachments/assets/b3df06bb-ae07-4e08-8956-5ae1ae1dc815" />
+
+## Workflow
+
+<img width="1536" height="1024" alt="workflow auth" src="https://github.com/user-attachments/assets/cda8dd32-261d-4268-9f11-64b07cc4e7ac" />
+
+### Screenshot
+
+<table>
+<tr>
+<th>Auth Service Startup Logs</th>
+<th>Redis Container Status</th>
+</tr>
+
+<tr>
+<td>
+<img src="https://github.com/user-attachments/assets/3fc7a105-4138-440d-b109-f234db9af47b">
+</td>
+
+<td>
+<img src="https://github.com/user-attachments/assets/f7eb1c60-6a9e-4ea6-99a9-12ca8cc1736f">
+</td>
+</tr>
+</table>
+
+### Result
+
+- Auth Service started successfully on port `8080`.
+- All authentication and authorization routes were registered successfully.
+- Health check endpoint responded with HTTP `200 OK`.
+- Structured request logging middleware is functioning correctly.
+- Redis container started successfully and is accessible.
+- Session management infrastructure initialized successfully.
+- JWT authentication components loaded successfully.
+- OAuth endpoints for Google and GitHub registered successfully.
+- Application dependencies connected and verified.
+- Service is ready to handle authentication, authorization, and session management requests.
+
+
+### Layer Responsibilities
+
+Handler      → HTTP requests, validation, JSON responses  
+Middleware   → JWT, RBAC, rate limiting, logging  
+Service      → Business logic and workflow orchestration  
+Repository   → PostgreSQL operations via GORM  
+TokenService → JWT generation, validation, refresh lifecycle  
+OAuthService → Google/GitHub authentication flow  
+Redis        → Sessions, refresh tokens, token blacklist
+
+### Dependency Flow
+
+```text
+Router
+  ↓
+Handler
+  ↓
+Service
+ ├── Repository (PostgreSQL)
+ ├── TokenService (JWT)
+ ├── OAuthService
+ └── Redis
+
+Service must not depend on Handler.
+
+Repository must not contain business logic.
+
+Handler must not directly access Database.
+
+JWT operations must go through TokenService.
+
+Database access must go through Repository.
+```
+
+
+Dependencies point inward only.
+
+---
+
+## Components
+
+| Component | Role |
+|---|---|
+| **Postgres** | Users, OAuth accounts, soft deletes |
+| **Redis** | Refresh token JTI store, IP-based rate limiter |
+| **Auth Handler** | HTTP layer — validation, routing, response shaping |
+| **Auth Service** | Signup, login, lockout, OAuth account linking |
+| **Token Service** | Access + refresh JWT generation, rotation, revocation |
+| **OAuth Service** | Google & GitHub provider flows |
+
+---
+
+## Project Structure
 
 ```
 auth-service/
-├── cmd/
-│   └── server/
-│       └── main.go              # Entry point, graceful shutdown
+├── cmd/server/main.go              # Entry point, graceful shutdown
 ├── internal/
 │   ├── auth/
-│   │   ├── handler/
-│   │   │   └── auth_handler.go  # HTTP handlers (Gin)
-│   │   ├── repository/
-│   │   │   └── auth_repository.go # DB access layer (GORM)
+│   │   ├── handler/auth_handler.go # HTTP layer (Gin)
+│   │   ├── repository/             # DB access (GORM)
 │   │   └── service/
-│   │       ├── auth_service.go     # Business logic
-│   │       ├── auth_service_test.go
-│   │       ├── oauth_service.go    # Google & GitHub OAuth
-│   │       └── token_service.go    # JWT generation & validation
+│   │       ├── auth_service.go     # Core business logic
+│   │       ├── token_service.go    # JWT + Redis lifecycle
+│   │       └── oauth_service.go    # Google & GitHub flows
 │   └── middleware/
-│       ├── jwt.go               # JWT auth middleware
-│       ├── rate_limit.go        # Redis-backed rate limiting
-│       ├── cors.go              # CORS configuration
-│       └── logger.go            # Request logging + recovery
+│       ├── jwt.go                  # JWT auth middleware
+│       ├── rate_limit.go           # Redis-backed rate limiter
+│       ├── cors.go
+│       └── logger.go               # Zap request logger + recovery
 ├── pkg/
-│   ├── cache/
-│   │   └── redis.go             # Redis client wrapper
-│   ├── config/
-│   │   └── config.go            # Config via env vars / .env
+│   ├── cache/redis.go
+│   ├── config/config.go            # Env-var config loader
+│   ├── crypto/token_cipher.go      # AES-256-GCM token encryption
 │   ├── database/
-│   │   ├── database.go          # GORM + PostgreSQL setup
-│   │   └── models.go            # User & OAuthAccount models
-│   ├── errors/
-│   │   └── errors.go            # Centralized AppError type
-│   ├── logger/
-│   │   └── logger.go            # Zap structured logger
-│   └── validator/
-│       ├── validator.go
-│       └── validator_test.go
-├── routes/
-│   └── routes.go                # Route registration & DI wiring
-├── .air.toml                    # Live-reload config
-├── .env.example                 # Environment variable template
-├── .gitignore
-├── Dockerfile                   # Multi-stage production build
-├── docker-compose.yml           # App + Postgres + Redis
-├── go.mod
+│   │   ├── database.go             # GORM + Postgres + auto-migrate
+│   │   └── models.go               # User & OAuthAccount models
+│   ├── errors/errors.go            # Typed error catalogue
+│   ├── logger/logger.go
+│   └── validator/validator.go
+├── routes/routes.go                # Route registration & DI wiring
+├── docs/                           # Swagger/OpenAPI generated files
+├── Dockerfile                      # Multi-stage production build
+├── docker-compose.yml
 ├── Makefile
-└── README.md
+└── .env.example
 ```
 
 ---
 
-## 🚀 Quick Start
+## Token Flow
 
-### Prerequisites
-
-- [Go 1.21+](https://golang.org/dl/)
-- [Docker & Docker Compose](https://docs.docker.com/get-docker/)
-- [Make](https://www.gnu.org/software/make/)
-
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/yourorg/auth-service.git
-cd auth-service
-cp .env.example .env
+```
+Client                        Auth Service                   Redis
+  │                                │                           │
+  ├── POST /login ────────────────►│                           │
+  │                                ├─ bcrypt.Compare           │
+  │                                ├─ GenerateTokenPair        │
+  │                                ├─ store refresh JTI ──────►│
+  │◄── { access_token, refresh } ──┤                           │
+  │                                │                           │
+  ├── GET /profile (Bearer) ──────►│                           │
+  │                                ├─ ValidateAccessToken      │
+  │◄── user profile ───────────────┤                           │
+  │                                │                           │
+  ├── POST /refresh ──────────────►│                           │
+  │                                ├─ ValidateRefreshToken     │
+  │                                ├─ check JTI exists ───────►│
+  │                                ├─ delete old JTI ─────────►│
+  │                                ├─ GenerateTokenPair (new)  │
+  │                                ├─ store new JTI ───────────►│
+  │◄── { new_access, new_refresh } ┤                           │
 ```
 
-Edit `.env` — at minimum, set these values:
-
-```bash
-JWT_ACCESS_SECRET=$(openssl rand -base64 64)
-JWT_REFRESH_SECRET=$(openssl rand -base64 64)
-DB_PASSWORD=your_secure_db_password
-```
-
-### 2. Run with Docker Compose (recommended)
-
-```bash
-make docker-up
-```
-
-This starts PostgreSQL, Redis, and the application. The API is available at `http://localhost:8080`.
-
-### 3. Run locally (without Docker app container)
-
-```bash
-# Start only infrastructure
-docker compose up -d postgres redis
-
-# Download dependencies
-go mod download
-
-# Run the server
-make run
-```
+Every `/refresh` call **invalidates** the old token. A stolen refresh token is single-use — reuse returns `401`.
 
 ---
 
-## 📡 API Reference
+## Security
 
-### Base URL
+| Feature | Implementation |
+|---|---|
+| Password hashing | bcrypt, 12 rounds |
+| Access tokens | JWT HS256, 15-min expiry, stateless |
+| Refresh tokens | JWT HS256, Redis JTI store, 7-day expiry |
+| Token rotation | Old JTI deleted on every refresh |
+| Account lockout | 5 failed attempts → 15-min lock |
+| OAuth token encryption | AES-256-GCM at rest in Postgres |
+| Rate limiting | Redis-backed per-IP, replica-safe |
+| Email verification | 32-byte cryptographically random hex token |
 
-```
-http://localhost:8080/api/v1
-```
+---
 
-### Endpoints
+## API
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| `GET` | `/health` | — | Health check |
-| `POST` | `/signup` | — | Register with email + password |
-| `POST` | `/login` | — | Login with email + password |
-| `POST` | `/refresh` | — | Rotate refresh token → new token pair |
-| `POST` | `/logout` | — | Revoke refresh token |
-| `GET` | `/oauth/google` | — | Initiate Google OAuth |
-| `GET` | `/oauth/google/callback` | — | Google OAuth callback |
-| `GET` | `/oauth/github` | — | Initiate GitHub OAuth |
-| `GET` | `/oauth/github/callback` | — | GitHub OAuth callback |
-| `GET` | `/profile` | JWT | Get current user profile |
-| `GET` | `/admin` | JWT + admin role | Admin dashboard |
+**Base URL:** `http://localhost:8080/api/v1`
 
-### Example: Signup
+| Method | Path | Auth | Rate Limit | Description |
+|---|---|---|---|---|
+| `GET` | `/health` | — | — | Health check |
+| `POST` | `/signup` | — | 10/min | Register — email + password |
+| `POST` | `/login` | — | 10/min | Login, receive token pair |
+| `POST` | `/refresh` | — | 10/min | Rotate refresh token |
+| `POST` | `/logout` | — | 10/min | Revoke refresh token |
+| `GET` | `/verify-email?token=` | — | 5/min | Activate account |
+| `GET` | `/oauth/google` | — | 10/min | Initiate Google OAuth |
+| `GET` | `/oauth/google/callback` | — | 10/min | Google callback |
+| `GET` | `/oauth/github` | — | 10/min | Initiate GitHub OAuth |
+| `GET` | `/oauth/github/callback` | — | 10/min | GitHub callback |
+| `GET` | `/profile` | JWT | 100/min | Current user profile |
+| `GET` | `/admin` | JWT + admin | 100/min | Admin dashboard |
+
+Full interactive docs: `http://localhost:8080/swagger/index.html`
+
+### Examples
 
 ```bash
+# Signup
 curl -X POST http://localhost:8080/api/v1/signup \
   -H "Content-Type: application/json" \
-  -d '{"name":"Alice","email":"alice@example.com","password":"Password1"}'
-```
+  -d '{"name":"Alice","email":"alice@example.com","password":"Password1!"}'
 
-**Response:**
+# Login
+curl -X POST http://localhost:8080/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"Password1!"}'
 
-```json
-{
-  "user": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "alice@example.com",
-    "name": "Alice",
-    "role": "user",
-    "provider": "local"
-  },
-  "tokens": {
-    "access_token": "eyJ...",
-    "refresh_token": "eyJ...",
-    "expires_in": 900
-  }
-}
-```
-
-### Example: Authenticated request
-
-```bash
+# Authenticated request
 curl http://localhost:8080/api/v1/profile \
   -H "Authorization: Bearer <access_token>"
-```
 
-### Example: Token refresh
-
-```bash
+# Rotate token
 curl -X POST http://localhost:8080/api/v1/refresh \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"<refresh_token>"}'
 ```
 
----
-
-## 🔐 Security Architecture
-
-### JWT Token Flow
-
-```
-Client                     Server                    Redis
-  │                           │                        │
-  ├─── POST /login ──────────►│                        │
-  │                           ├── hash compare         │
-  │                           ├── generate access JWT  │
-  │                           ├── generate refresh JWT │
-  │                           ├── store refresh JTI ──►│
-  │◄── {access, refresh} ─────┤                        │
-  │                           │                        │
-  ├─── GET /profile ─────────►│                        │
-  │    Authorization: Bearer  │                        │
-  │                           ├── validate access JWT  │
-  │◄── user profile ──────────┤                        │
-  │                           │                        │
-  ├─── POST /refresh ────────►│                        │
-  │    {refresh_token}        ├── validate refresh JWT │
-  │                           ├── check JTI in Redis ─►│
-  │                           ├── delete old JTI ─────►│
-  │                           ├── issue new pair       │
-  │                           ├── store new JTI ──────►│
-  │◄── {new_access, new_ref} ─┤                        │
-```
-
-### Token Rotation Strategy
-
-Every call to `/refresh` **invalidates** the old refresh token and issues a completely new pair. This means:
-- Stolen refresh tokens are single-use
-- Reuse of a revoked token returns `401 Unauthorized`
-
-### Password Hashing
-
-bcrypt with `DefaultCost` (12 rounds).
-
-### Rate Limiting
-
-| Route Group | Limit |
-|-------------|-------|
-| `/signup`, `/login`, `/refresh`, `/logout`, `/oauth/*` | 10 req/min per IP |
-| `/profile`, `/admin` | 100 req/min per IP |
-
-Backed by Redis for correctness across multiple replicas.
+> Account is **inactive** until email is verified. No tokens issued on signup.
 
 ---
 
-## 🧱 Clean Architecture Layers
+## Database Schema
 
-```
-Handler  →  receives HTTP, validates input, calls Service
-Service  →  business logic, orchestrates calls to Repository and TokenService
-Repository → pure DB access via GORM, no business logic
-```
-
-Dependencies point inward: Handler knows Service, Service knows Repository. Repository knows nothing about the layers above it.
-
----
-
-## 🗄️ Database Schema
-
-### users
+### `users`
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | Primary key |
-| `email` | VARCHAR(255) | Unique, not null |
-| `password` | VARCHAR(255) | bcrypt hash; empty for OAuth users |
-| `provider` | VARCHAR(50) | `local`, `google`, `github` |
-| `role` | VARCHAR(50) | `user`, `admin` |
-| `name` | VARCHAR(255) | Display name |
-| `avatar_url` | VARCHAR(512) | Profile picture |
-| `is_active` | BOOLEAN | Soft-disable accounts |
-| `created_at` | TIMESTAMPTZ | |
-| `updated_at` | TIMESTAMPTZ | |
-| `deleted_at` | TIMESTAMPTZ | Soft delete |
+|---|---|---|
+| `id` | `UUID` | Primary key |
+| `email` | `VARCHAR(255)` | Unique |
+| `password` | `VARCHAR(255)` | bcrypt hash — empty for OAuth users |
+| `provider` | `VARCHAR(50)` | `local` · `google` · `github` |
+| `role` | `VARCHAR(50)` | `user` · `admin` |
+| `name` | `VARCHAR(255)` | |
+| `avatar_url` | `VARCHAR(512)` | |
+| `is_active` | `BOOLEAN` | False until email verified |
+| `email_verified` | `BOOLEAN` | True for OAuth users |
+| `failed_login_attempts` | `INT` | Resets on successful login |
+| `locked_until` | `TIMESTAMPTZ` | Null if not locked |
+| `created_at` / `updated_at` / `deleted_at` | `TIMESTAMPTZ` | GORM managed, soft delete |
 
-### oauth_accounts
+### `oauth_accounts`
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | Primary key |
-| `user_id` | UUID | FK → users |
-| `provider` | VARCHAR(50) | `google`, `github` |
-| `provider_user_id` | VARCHAR(255) | Provider's user ID |
-| `access_token` | TEXT | Encrypted in transit |
-| `refresh_token` | TEXT | |
-| `expires_at` | TIMESTAMPTZ | |
+|---|---|---|
+| `id` | `UUID` | Primary key |
+| `user_id` | `UUID` | FK → `users.id` |
+| `provider` | `VARCHAR(50)` | `google` · `github` |
+| `provider_user_id` | `VARCHAR(255)` | |
+| `access_token` | `TEXT` | AES-256-GCM encrypted |
+| `refresh_token` | `TEXT` | AES-256-GCM encrypted |
+| `expires_at` | `TIMESTAMPTZ` | |
 
 ---
 
-## 🧪 Testing
+## Environment Variables
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `APP_PORT` | | `8080` | HTTP listen port |
+| `APP_ENV` | | `development` | `development` or `production` |
+| `APP_BASE_URL` | | `http://localhost:8080` | Public base URL |
+| `CORS_ALLOWED_ORIGINS` | | `*` | Comma-separated origins |
+| `DB_HOST` | | `localhost` | |
+| `DB_PORT` | | `5432` | |
+| `DB_USER` | | `postgres` | |
+| `DB_PASSWORD` | ✅ | — | |
+| `DB_NAME` | | `authdb` | |
+| `DB_SSLMODE` | | `disable` | `verify-full` in production |
+| `REDIS_HOST` | | `localhost` | |
+| `REDIS_PORT` | | `6379` | |
+| `REDIS_PASSWORD` | | — | |
+| `JWT_ACCESS_SECRET` | ✅ | — | Min 32 chars |
+| `JWT_REFRESH_SECRET` | ✅ | — | Different from access secret |
+| `JWT_ACCESS_EXPIRY` | | `15m` | |
+| `JWT_REFRESH_EXPIRY` | | `168h` | 7 days |
+| `GOOGLE_CLIENT_ID` | OAuth | — | |
+| `GOOGLE_CLIENT_SECRET` | OAuth | — | |
+| `GITHUB_CLIENT_ID` | OAuth | — | |
+| `GITHUB_CLIENT_SECRET` | OAuth | — | |
+| `TOKEN_ENCRYPTION_KEY` | Prod | — | 32-byte AES key |
+
+Generate secrets:
 
 ```bash
-# Run all tests
-make test
-
-# With race detection
-make test-race
-
-# With coverage HTML report
-make test-coverage
-```
-
-The test suite uses an **in-memory fake repository** — no database required.
-
----
-
-## ⚙️ Configuration Reference
-
-All configuration is via environment variables (or `.env`).
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `APP_PORT` | `8080` | HTTP port |
-| `APP_ENV` | `development` | `development` or `production` |
-| `APP_BASE_URL` | `http://localhost:8080` | Public base URL |
-| `DB_HOST` | `localhost` | PostgreSQL host |
-| `DB_PORT` | `5432` | PostgreSQL port |
-| `DB_USER` | `postgres` | Database user |
-| `DB_PASSWORD` | — | **Required** |
-| `DB_NAME` | `authdb` | Database name |
-| `DB_SSLMODE` | `disable` | SSL mode (`verify-full` in prod) |
-| `REDIS_HOST` | `localhost` | Redis host |
-| `REDIS_PORT` | `6379` | Redis port |
-| `REDIS_PASSWORD` | — | Redis password |
-| `JWT_ACCESS_SECRET` | — | **Required** — min 32 chars |
-| `JWT_REFRESH_SECRET` | — | **Required** — different from access |
-| `JWT_ACCESS_EXPIRY` | `15m` | Access token lifetime |
-| `JWT_REFRESH_EXPIRY` | `168h` | Refresh token lifetime |
-| `GOOGLE_CLIENT_ID` | — | OAuth app credential |
-| `GOOGLE_CLIENT_SECRET` | — | OAuth app credential |
-| `GITHUB_CLIENT_ID` | — | OAuth app credential |
-| `GITHUB_CLIENT_SECRET` | — | OAuth app credential |
-
----
-
-## 🔧 OAuth Setup
-
-### Google
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Create an **OAuth 2.0 Client ID** (Web application)
-3. Add Authorized redirect URI: `http://localhost:8080/api/v1/oauth/google/callback`
-4. Copy `Client ID` and `Client Secret` to `.env`
-
-### GitHub
-
-1. Go to [GitHub Developer Settings](https://github.com/settings/applications/new)
-2. Set Homepage URL: `http://localhost:8080`
-3. Set Callback URL: `http://localhost:8080/api/v1/oauth/github/callback`
-4. Copy `Client ID` and generate a `Client Secret`, paste into `.env`
-
----
-
-## 🏭 Production Checklist
-
-- [ ] Set `APP_ENV=production`
-- [ ] Use strong random secrets for `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET`
-- [ ] Set `DB_SSLMODE=verify-full` with proper certificates
-- [ ] Set a `REDIS_PASSWORD`
-- [ ] Put the service behind a TLS-terminating reverse proxy (nginx / Caddy)
-- [ ] Restrict CORS `AllowOrigins` in `middleware/cors.go`
-- [ ] Set up log aggregation (Datadog, Loki, etc.)
-- [ ] Set up health-check monitoring on `/health`
-
----
-
-## 📦 Makefile Commands
-
-```
-make help          Show all commands
-make build         Build binary
-make run           Build and run
-make dev           Live reload with Air
-make test          Run tests
-make test-coverage Generate coverage report
-make lint          Run golangci-lint
-make fmt           Format code
-make docker-up     Start all Docker services
-make docker-down   Stop Docker services
-make swagger       Generate Swagger docs
-make setup         First-time project setup
+openssl rand -base64 64   # JWT_ACCESS_SECRET
+openssl rand -base64 64   # JWT_REFRESH_SECRET
+openssl rand -base64 32   # TOKEN_ENCRYPTION_KEY
 ```
 
 ---
 
-## 🔮 Future Improvements
+## Quick Start
 
-- Fully implement the email verification flow with a real provider (e.g., SendGrid, AWS SES).
-- Add support for additional OAuth providers (e.g., Apple, Microsoft).
-- Implement 2FA/MFA (Time-based One-Time Passwords).
-- Expand test coverage and add end-to-end (E2E) integration tests.
+### Docker Compose *(recommended)*
+
+```bash
+git clone https://github.com/yourorg/auth-service.git
+cd auth-service
+cp .env.example .env
+# fill in secrets in .env
+
+docker compose up --build
+```
+
+API at `http://localhost:8080`.
+
+### Local
+
+```bash
+# Start infra only
+docker compose up -d postgres redis
+
+go mod download
+make run           # or: make dev  (Air live-reload)
+```
+
+### Verify
+
+```bash
+curl http://localhost:8080/health
+# → {"status":"ok"}
+```
 
 ---
 
-## 📄 License
+## OAuth Setup
 
-MIT
+**Google** — [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+Redirect URI: `http://localhost:8080/api/v1/oauth/google/callback`
+
+**GitHub** — [github.com/settings/applications/new](https://github.com/settings/applications/new)
+Callback URL: `http://localhost:8080/api/v1/oauth/github/callback`
+
+---
+
+## Makefile
+
+```bash
+make build           # Compile binary
+make run             # Build and run
+make dev             # Live-reload with Air
+make test            # Run tests
+make test-race       # With race detector
+make test-coverage   # HTML coverage report
+make lint            # golangci-lint
+make fmt             # gofmt
+make docker-up       # Start all Docker services
+make docker-down     # Stop
+make swagger         # Regenerate Swagger docs
+make setup           # First-time setup
+```
+
+---
+
 
